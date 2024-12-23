@@ -10,6 +10,8 @@ from pydantic import BaseModel
 import base64
 from functools import partial
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
+import gc
 
 app = FastAPI()
 
@@ -22,6 +24,8 @@ app.add_middleware(
     allow_headers=["*"],  # 모든 헤더 허용
 )
 
+# 전역 ThreadPoolExecutor 설정
+thread_pool = ThreadPoolExecutor(max_workers=3)  # 동시 처리 제한
 
 @app.get("/")
 def read_root():
@@ -33,9 +37,9 @@ async def async_remove_background(input_data: bytes) -> bytes:
     이미지의 배경을 제거하는 비동기 함수
     """
     try:
-        # 동기 함수를 비동기로 실행
         loop = asyncio.get_event_loop()
-        output = await loop.run_in_executor(None, partial(remove, input_data, force_return_bytes=True))
+        output = await loop.run_in_executor(thread_pool, partial(remove, input_data, force_return_bytes=True))
+        gc.collect()  # 명시적 가비지 컬렉션 실행
         return output
     except Exception as e:
         print(f"에러 발생: {str(e)}")
@@ -51,6 +55,13 @@ async def remove_bg(image_input: ImageInput):
     Base64로 인코딩된 이미지를 받아서 배경을 제거하고 결과를 반환하는 엔드포인트
     """
     try:
+        # 입력 이미지 크기 제한 (예: 10MB)
+        max_size = 10 * 1024 * 1024  # 10MB
+        decoded_size = len(base64.b64decode(image_input.image.split(',')[1] if ',' in image_input.image else image_input.image))
+
+        if decoded_size > max_size:
+            return {"status": "error", "message": "이미지 크기가 너무 큽니다 (최대 10MB)"}
+
         # base64 문자열에서 prefix 제거 (만약 있다면)
         if ',' in image_input.image:
             image_input.image = image_input.image.split(',')[1]
@@ -63,6 +74,9 @@ async def remove_bg(image_input: ImageInput):
 
         # 결과를 base64로 인코딩하여 반환
         output_base64 = base64.b64encode(output_data).decode('utf-8')
+
+        # 처리 완료 후 메모리 정리
+        gc.collect()
 
         return {
             "status": "success",
